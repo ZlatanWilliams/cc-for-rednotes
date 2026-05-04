@@ -1,0 +1,6 @@
+.env
+browser_data/
+__pycache__/
+*.pyc
+*.pyo
+CLAUDE.md
