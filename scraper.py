@@ -16,6 +16,9 @@ from playwright.async_api import async_playwright, BrowserContext
 
 BROWSER_DATA_DIR = Path(__file__).parent / "browser_data"
 
+_LOGIN_KEYWORDS = ("登录", "登陆")
+_CDN_HOSTS = ("xhscdn", "ci.xiaohongshu", "sns-webpic", "fe-static")
+
 
 async def _ensure_logged_in(context: BrowserContext) -> None:
     page = await context.new_page()
@@ -53,6 +56,11 @@ async def _resolve_short_url(url: str) -> str:
     return final_url
 
 
+def _is_login_page(note: dict) -> bool:
+    title = note.get("title", "")
+    return any(kw in title for kw in _LOGIN_KEYWORDS)
+
+
 async def _extract_note(page) -> dict:
     data = {
         "title": "",
@@ -83,26 +91,33 @@ async def _extract_note(page) -> dict:
             if data["text"]:
                 break
 
-    img_els = await page.locator("img").all()
+    # Scroll to trigger lazy-loaded images, then scroll back
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await asyncio.sleep(1)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await asyncio.sleep(0.5)
+
+    # Collect all image sources in one JS pass (src, data-src, data-original)
+    raw_imgs = await page.evaluate("""
+        () => Array.from(document.querySelectorAll('img')).map(img => ({
+            src: img.src || img.getAttribute('data-src') || img.getAttribute('data-original') || '',
+            w: img.naturalWidth || img.width || 0,
+            h: img.naturalHeight || img.height || 0
+        }))
+    """)
+
     seen: set[str] = set()
-    for img in img_els:
-        src = await img.get_attribute("src") or ""
+    for img in raw_imgs:
+        src = img.get("src", "")
         if not src or src in seen:
             continue
-        if any(cdn in src for cdn in ["sns-webpic", "ci.xiaohongshu", "xhscdn", "fe-static"]):
-            width = await img.get_attribute("width") or "0"
-            if int(width) < 50 if width.isdigit() else False:
-                continue
+        if not any(cdn in src for cdn in _CDN_HOSTS):
+            continue
+        w, h = img.get("w", 0), img.get("h", 0)
+        # Keep if large enough, or if dimensions unknown (naturalSize not loaded yet)
+        if (w == 0 and h == 0) or w >= 100 or h >= 100:
             seen.add(src)
             data["image_urls"].append(src)
-
-    if not data["image_urls"]:
-        for img in img_els:
-            for attr in ["data-src", "data-original"]:
-                src = await img.get_attribute(attr) or ""
-                if src and src not in seen:
-                    seen.add(src)
-                    data["image_urls"].append(src)
 
     return data
 
@@ -134,22 +149,38 @@ async def _scrape_all(urls: list[str], headless: bool) -> list[dict]:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)
 
-                if "login" in page.url:
+                # Detect login: URL-based redirect OR modal overlay
+                login_modal = await page.locator(
+                    'input[type="tel"], .login-container, [class*="signflow"]'
+                ).count()
+                if "login" in page.url or login_modal > 0:
                     await page.close()
+                    await context.close()
                     if headless:
-                        await context.close()
                         return await _scrape_all(urls, headless=False)
-                    print("  [Error] Login redirect detected — skipping.")
+                    print("  [Error] Login required but already in headed mode — skipping.")
+                    results.extend([{}] * (len(urls) - len(results)))
+                    return results
+
+                note = await _extract_note(page)
+
+                # Post-extraction safety: login modal may have appeared after load
+                if _is_login_page(note):
+                    await page.close()
+                    await context.close()
+                    if headless:
+                        return await _scrape_all(urls, headless=False)
+                    print("  [Error] Got login page title — skipping.")
                     results.append({})
                     continue
 
-                note = await _extract_note(page)
                 results.append(note)
             except Exception as e:
                 print(f"  [Error] Failed to scrape: {e}")
                 results.append({})
             finally:
-                await page.close()
+                if not page.is_closed():
+                    await page.close()
 
         await context.close()
 
