@@ -161,6 +161,10 @@ async def _scroll_and_collect(page: Page) -> list[dict]:
     empty_scrolls = 0
     scroll_num = 0
 
+    print(f"  Scrolling page: {page.url}")
+    if "/collect" not in page.url:
+        print("  [WARNING] URL does not contain '/collect' — may be on wrong page!")
+
     while empty_scrolls < _MAX_EMPTY_SCROLLS:
         scroll_num += 1
         raw_count, cards = await _extract_cards(page, seen_ids)
