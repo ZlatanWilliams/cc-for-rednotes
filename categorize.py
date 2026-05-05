@@ -9,7 +9,34 @@ import re
 from processor import _get_client
 
 
-def categorize_posts(stubs: list[dict]) -> dict[str, str]:
+def categorize_one(stub: dict, existing_albums: list[str]) -> str:
+    """
+    Given a single post stub and the current list of existing album names,
+    return the album name to assign (reusing an existing one if it fits,
+    or proposing a new short Chinese name).
+    """
+    client, model = _get_client()
+    title = stub.get("title") or "(no title)"
+    existing = "、".join(existing_albums) if existing_albums else "（暂无）"
+
+    prompt = (
+        f"A user saved a Xiaohongshu post titled: \"{title}\"\n\n"
+        f"Existing albums: {existing}\n\n"
+        "Which album should this post go into?\n"
+        "- If one of the existing albums clearly fits, return exactly that album name.\n"
+        "- If none fits, suggest a new short Chinese album name (2–6 characters).\n"
+        "Return ONLY the album name, nothing else."
+    )
+
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=20,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content.strip()
+
+
+
     """
     Takes a list of {url, title, cover_image_url} stubs.
     Returns {url: album_name} for every stub.

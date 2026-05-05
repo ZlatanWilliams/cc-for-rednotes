@@ -42,7 +42,7 @@ async def _make_context(headless: bool):
 # Login + profile URL detection
 # ---------------------------------------------------------------------------
 
-async def _get_profile_url(page: Page) -> str | None:
+async def get_profile_url(page: Page) -> str | None:
     """
     Navigate to XHS home, verify login by finding the user's own profile link.
     Returns the profile URL, or None if not logged in.
@@ -73,7 +73,7 @@ async def _get_profile_url(page: Page) -> str | None:
     return f"https://www.xiaohongshu.com{profile_href.split('?')[0]}" if profile_href else None
 
 
-async def _navigate_to_collect(page: Page, profile_url: str) -> bool:
+async def navigate_to_collect(page: Page, profile_url: str) -> bool:
     """
     Go to the profile page and click the 收藏 tab.
     Returns True on success.
@@ -119,20 +119,20 @@ async def _scrape_collect(debug: bool = False) -> list[dict]:
     p, ctx = await _make_context(headless=not debug)
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-    profile_url = await _get_profile_url(page)
+    profile_url = await get_profile_url(page)
 
     if not profile_url:
         print("\n[Login required] No profile link found — you are not logged in.")
         print("Please log in to Xiaohongshu in the browser window, then press Enter...")
         input()
-        profile_url = await _get_profile_url(page)
+        profile_url = await get_profile_url(page)
         if not profile_url:
             print("[Error] Still cannot find profile link after login. Aborting.")
             await ctx.close()
             await p.stop()
             return []
 
-    ok = await _navigate_to_collect(page, profile_url)
+    ok = await navigate_to_collect(page, profile_url)
     if not ok:
         print("[Error] Could not find or click the 收藏 tab. See tab list above for diagnostics.")
         await ctx.close()

@@ -1,23 +1,62 @@
 #!/usr/bin/env python
 """
-Favorites auto-sorter — scrapes the logged-in user's 收藏夹, uses AI to
-categorize posts into named 专辑, then creates those albums on XHS and
-moves each post into the right one.
+Favorites auto-sorter — scrapes the logged-in user's 收藏夹, then sorts each
+post into an AI-assigned 专辑 one by one, creating the album on XHS if needed.
 
 Usage:
     python sort.py
 """
 
+import asyncio
 import sys
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
+async def _sort_one_by_one(stubs: list[dict]) -> None:
+    from categorize import categorize_one
+    from sort_into_albums import SortSession
+
+    total = len(stubs)
+    session = SortSession()
+
+    print("\n[2/2] Opening browser and navigating to 收藏夹...")
+    try:
+        await session.open()
+    except RuntimeError as e:
+        print(f"[Error] {e}")
+        sys.exit(1)
+
+    succeeded = failed = 0
+
+    for i, stub in enumerate(stubs, 1):
+        title = stub.get("title") or "(no title)"
+        note_id = stub.get("note_id", "")
+        print(f"\n[{i}/{total}] '{title}'")
+
+        album = categorize_one(stub, sorted(session.created_albums))
+        print(f"  → Album: '{album}'")
+
+        await session.ensure_album(album)
+
+        ok = await session.move_post(note_id, album)
+        if ok:
+            print(f"  ✓ Moved")
+            succeeded += 1
+        else:
+            print(f"  ✗ Skipped")
+            failed += 1
+
+    await session.close()
+    print(f"\nDone. {succeeded} moved, {failed} skipped.")
+
+
 def main():
     print("\n=== RedNote 收藏夹 Auto-Sorter ===\n")
 
-    print("[1/3] Collecting posts from 收藏夹...")
+    print("[1/2] Collecting posts from 收藏夹...")
     from collect import get_collect_stubs
     stubs = get_collect_stubs()
 
@@ -25,17 +64,9 @@ def main():
         print("[Error] No posts found in 收藏夹. Make sure you are logged in.")
         sys.exit(1)
 
-    print(f"\n[2/3] Categorizing {len(stubs)} posts with AI...")
-    from categorize import categorize_posts
-    try:
-        url_to_album = categorize_posts(stubs)
-    except Exception as e:
-        print(f"[Error] Categorization failed: {e}")
-        sys.exit(1)
+    print(f"  Found {len(stubs)} posts.")
 
-    print(f"\n[3/3] Sorting posts into albums on XHS...")
-    from sort_into_albums import sort_into_albums
-    sort_into_albums(url_to_album)
+    asyncio.run(_sort_one_by_one(stubs))
 
 
 if __name__ == "__main__":

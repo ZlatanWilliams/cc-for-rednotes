@@ -1,9 +1,9 @@
 """
 Playwright automation that creates 专辑 (albums) in the user's XHS 收藏夹
-and moves each saved post into the correct album.
+and moves posts into them one at a time via SortSession.
 
-XHS UI interactions are selector-dependent; selectors are defined as
-constants at the top so they can be updated if XHS changes its DOM.
+XHS UI selectors are defined as constants at the top — update them here
+if XHS changes its DOM.
 """
 
 import asyncio
@@ -11,8 +11,7 @@ import asyncio
 from playwright.async_api import async_playwright, Page
 
 from scraper import BROWSER_DATA_DIR
-
-COLLECT_URL = "https://www.xiaohongshu.com/user/profile/me/collect"
+from collect import get_profile_url, navigate_to_collect
 
 # --- Selectors (update here if XHS changes its DOM) ---
 SEL_NEW_ALBUM_BTN = (
@@ -27,12 +26,7 @@ SEL_ALBUM_CONFIRM_BTN = (
     'button:has-text("创建"), '
     'button:has-text("保存")'
 )
-SEL_NOTE_CARD = (
-    'section.note-item, '
-    '.notes-item, '
-    '.collect-item, '
-    '[class*="note-item"]'
-)
+SEL_NOTE_CARD = 'section.note-item, .notes-item, .collect-item, .note-card'
 SEL_CARD_MENU = (
     '[class*="more"], '
     '[class*="dots"], '
@@ -49,86 +43,28 @@ SEL_ALBUM_OPTION = '[class*="album-item"], [class*="album-option"], li[class*="a
 # -------------------------------------------------------
 
 
-async def _create_albums(page: Page, album_names: list[str]) -> None:
-    print(f"  Creating {len(album_names)} album(s): {', '.join(album_names)}")
-    for name in album_names:
-        try:
-            btn = page.locator(SEL_NEW_ALBUM_BTN).first
-            await btn.wait_for(timeout=5000)
-            await btn.click()
-            await asyncio.sleep(0.8)
+class SortSession:
+    """
+    Keeps a single browser context open for the full sort run.
+    Tracks which albums have already been created.
 
-            inp = page.locator(SEL_ALBUM_NAME_INPUT).first
-            await inp.wait_for(timeout=3000)
-            await inp.fill(name)
-            await asyncio.sleep(0.3)
+    Usage:
+        session = SortSession()
+        await session.open()
+        await session.ensure_album("美食")
+        ok = await session.move_post("abc123def", "美食")
+        await session.close()
+    """
 
-            confirm = page.locator(SEL_ALBUM_CONFIRM_BTN).first
-            await confirm.click()
-            await asyncio.sleep(1)
-            print(f"    Created album: {name}")
-        except Exception as e:
-            print(f"    [Error] Could not create album '{name}': {e}")
+    def __init__(self):
+        self._p = None
+        self._ctx = None
+        self._page: Page | None = None
+        self.created_albums: set[str] = set()
 
-
-async def _move_post_to_album(page: Page, post_url: str, album_name: str) -> bool:
-    """Find a post card by its URL and move it to the named album. Returns True on success."""
-    # Extract note ID from URL for matching
-    note_id = post_url.rstrip("/").split("/")[-1].split("?")[0]
-
-    # Find the card whose link contains the note ID
-    card = page.locator(f'{SEL_NOTE_CARD}:has(a[href*="{note_id}"])').first
-    if await card.count() == 0:
-        # Scroll to try to find it
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(1)
-        if await card.count() == 0:
-            print(f"    [Skip] Card not found for: {note_id}")
-            return False
-
-    # Hover to reveal the options menu
-    await card.hover()
-    await asyncio.sleep(0.4)
-
-    menu_btn = card.locator(SEL_CARD_MENU).first
-    if await menu_btn.count() == 0:
-        print(f"    [Skip] No menu button found for: {note_id}")
-        return False
-
-    await menu_btn.click()
-    await asyncio.sleep(0.5)
-
-    # Click "移动到专辑"
-    move_opt = page.locator(SEL_MOVE_TO_ALBUM).first
-    try:
-        await move_opt.wait_for(timeout=3000)
-        await move_opt.click()
-        await asyncio.sleep(0.5)
-    except Exception:
-        print(f"    [Skip] '移动到专辑' option not found for: {note_id}")
-        # Close any open menu
-        await page.keyboard.press("Escape")
-        return False
-
-    # Select the target album from the list
-    album_opt = page.locator(f'{SEL_ALBUM_OPTION}:has-text("{album_name}")').first
-    try:
-        await album_opt.wait_for(timeout=3000)
-        await album_opt.click()
-        await asyncio.sleep(0.5)
-    except Exception:
-        print(f"    [Skip] Album option '{album_name}' not visible for: {note_id}")
-        await page.keyboard.press("Escape")
-        return False
-
-    return True
-
-
-async def _sort(url_to_album: dict[str, str]) -> None:
-    album_names = sorted(set(url_to_album.values()))
-
-    async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
+    async def open(self) -> None:
+        self._p = await async_playwright().start()
+        self._ctx = await self._p.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_DATA_DIR),
             headless=False,  # must be visible for UI interactions
             viewport={"width": 1280, "height": 900},
@@ -139,34 +75,89 @@ async def _sort(url_to_album: dict[str, str]) -> None:
             ),
             locale="zh-CN",
         )
+        for page in self._ctx.pages[1:]:
+            await page.close()
+        self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
 
-        page = await context.new_page()
-        await page.goto(COLLECT_URL, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        # Navigate to 收藏夹 via profile → 收藏 tab click
+        profile_url = await get_profile_url(self._page)
+        if not profile_url:
+            raise RuntimeError("Not logged in — cannot open 收藏夹.")
+        ok = await navigate_to_collect(self._page, profile_url)
+        if not ok:
+            raise RuntimeError("Could not navigate to 收藏 tab.")
 
-        print("\n[Step A] Creating albums...")
-        await _create_albums(page, album_names)
+    async def ensure_album(self, name: str) -> None:
+        """Create the album on XHS if it hasn't been created this session."""
+        if name in self.created_albums:
+            return
+        try:
+            btn = self._page.locator(SEL_NEW_ALBUM_BTN).first
+            await btn.wait_for(timeout=5000)
+            await btn.click()
+            await asyncio.sleep(0.8)
 
-        print("\n[Step B] Moving posts into albums...")
-        succeeded = 0
-        failed = 0
-        total = len(url_to_album)
-
-        for i, (url, album) in enumerate(url_to_album.items(), 1):
-            print(f"  [{i}/{total}] → '{album}'", end=" ")
-            ok = await _move_post_to_album(page, url, album)
-            if ok:
-                print("✓")
-                succeeded += 1
-            else:
-                failed += 1
+            inp = self._page.locator(SEL_ALBUM_NAME_INPUT).first
+            await inp.wait_for(timeout=3000)
+            await inp.fill(name)
             await asyncio.sleep(0.3)
 
-        await context.close()
+            confirm = self._page.locator(SEL_ALBUM_CONFIRM_BTN).first
+            await confirm.click()
+            await asyncio.sleep(1)
 
-    print(f"\nDone. {succeeded} moved, {failed} skipped.")
+            self.created_albums.add(name)
+            print(f"  [Album created] '{name}'")
+        except Exception as e:
+            print(f"  [Error] Could not create album '{name}': {e}")
 
+    async def move_post(self, note_id: str, album_name: str) -> bool:
+        """Find a post card by note ID and move it to the named album."""
+        page = self._page
 
-def sort_into_albums(url_to_album: dict[str, str]) -> None:
-    """Public entry point. Takes {url: album_name} and performs XHS UI automation."""
-    asyncio.run(_sort(url_to_album))
+        card = page.locator(f'{SEL_NOTE_CARD}:has(a[href*="{note_id}"])').first
+        if await card.count() == 0:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1)
+            if await card.count() == 0:
+                print(f"  [Skip] Card not found: {note_id}")
+                return False
+
+        await card.hover()
+        await asyncio.sleep(0.4)
+
+        menu_btn = card.locator(SEL_CARD_MENU).first
+        if await menu_btn.count() == 0:
+            print(f"  [Skip] No menu button: {note_id}")
+            return False
+
+        await menu_btn.click()
+        await asyncio.sleep(0.5)
+
+        move_opt = page.locator(SEL_MOVE_TO_ALBUM).first
+        try:
+            await move_opt.wait_for(timeout=3000)
+            await move_opt.click()
+            await asyncio.sleep(0.5)
+        except Exception:
+            print(f"  [Skip] '移动到专辑' option not found: {note_id}")
+            await page.keyboard.press("Escape")
+            return False
+
+        album_opt = page.locator(f'{SEL_ALBUM_OPTION}:has-text("{album_name}")').first
+        try:
+            await album_opt.wait_for(timeout=3000)
+            await album_opt.click()
+            await asyncio.sleep(0.5)
+        except Exception:
+            print(f"  [Skip] Album option '{album_name}' not visible: {note_id}")
+            await page.keyboard.press("Escape")
+            return False
+
+        return True
+
+    async def close(self) -> None:
+        if self._ctx:
+            await self._ctx.close()
+        if self._p:
+            await self._p.stop()
