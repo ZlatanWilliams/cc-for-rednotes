@@ -259,9 +259,9 @@ async def _extract_cards(page: Page, seen_ids: set[str]) -> tuple[int, list[dict
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_collect_stubs() -> list[dict]:
+def get_collect_stubs(debug: bool = False) -> list[dict]:
     """Returns all post stubs from the logged-in user's 收藏夹."""
-    return asyncio.run(_scrape_collect(debug=False))
+    return asyncio.run(_scrape_collect(debug=debug))
 
 
 if __name__ == "__main__":

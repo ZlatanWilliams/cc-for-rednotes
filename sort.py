@@ -4,7 +4,8 @@ Favorites auto-sorter — scrapes the logged-in user's 收藏夹, then sorts eac
 post into an AI-assigned 专辑 one by one, creating the album on XHS if needed.
 
 Usage:
-    python sort.py
+    python sort.py           # normal run
+    python sort.py --debug   # visible browser, checkpoints, pause before each move
 """
 
 import asyncio
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-async def _sort_one_by_one(stubs: list[dict]) -> None:
+async def _sort_one_by_one(stubs: list[dict], debug: bool = False) -> None:
     from categorize import categorize_one
     from sort_into_albums import SortSession
 
@@ -39,6 +40,13 @@ async def _sort_one_by_one(stubs: list[dict]) -> None:
         album = categorize_one(stub, sorted(session.created_albums))
         print(f"  → Album: '{album}'")
 
+        if debug:
+            ans = input("  Press Enter to move, or type 's' to skip: ").strip().lower()
+            if ans == "s":
+                print("  Skipped.")
+                failed += 1
+                continue
+
         await session.ensure_album(album)
 
         ok = await session.move_post(note_id, album)
@@ -54,11 +62,17 @@ async def _sort_one_by_one(stubs: list[dict]) -> None:
 
 
 def main():
-    print("\n=== RedNote 收藏夹 Auto-Sorter ===\n")
+    debug = "--debug" in sys.argv
+
+    print("\n=== RedNote 收藏夹 Auto-Sorter ===")
+    if debug:
+        print("(DEBUG mode — browser visible, pauses before each move)\n")
+    else:
+        print()
 
     print("[1/2] Collecting posts from 收藏夹...")
     from collect import get_collect_stubs
-    stubs = get_collect_stubs()
+    stubs = get_collect_stubs(debug=debug)
 
     if not stubs:
         print("[Error] No posts found in 收藏夹. Make sure you are logged in.")
@@ -66,7 +80,7 @@ def main():
 
     print(f"  Found {len(stubs)} posts.")
 
-    asyncio.run(_sort_one_by_one(stubs))
+    asyncio.run(_sort_one_by_one(stubs, debug=debug))
 
 
 if __name__ == "__main__":
