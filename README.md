@@ -39,7 +39,22 @@ python main.py "https://..." "https://..." "https://..."
 
 Each note is saved as `YYYY-MM-DD_<title>.md` in the configured output directory (`D:\Personal Data\obsidian\zzy-kb\raw\rednotes\` by default — change `OUTPUT_DIR` in `main.py`).
 
-## Output format
+## Favorites auto-sorter
+
+Automatically sorts all posts in your 收藏夹 (Favorites) into named 专辑 (Albums) on XHS.
+
+```bash
+python sort.py
+```
+
+No arguments needed — it always operates on the logged-in user's own 收藏夹. The tool will:
+1. Scrape all saved posts from your 收藏夹
+2. Send the list to the AI model to determine album categories
+3. Open a browser window, create each 专辑 on XHS, and move every post into the right one
+
+> The browser runs in headed (visible) mode for the sort step since it performs UI interactions on XHS.
+
+## Note output format
 
 ```markdown
 ---

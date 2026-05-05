@@ -27,13 +27,20 @@ python main.py "https://www.xiaohongshu.com/explore/<id>"
 
 # Multiple notes in one pass
 python main.py "https://..." "https://..." "https://..."
+
+# Auto-sort 收藏夹 into 专辑 on XHS
+python sort.py
 ```
 
-First run opens a headed browser for manual login; the session persists in `browser_data/` and all subsequent runs are headless.
+First run opens a headed browser for manual login; the session persists in `browser_data/` and all subsequent runs are headless (except `sort.py` which always runs headed for UI interactions).
 
 ## Architecture
 
-The pipeline is strictly linear: `main.py` → `scraper.py` → `processor.py` → file write.
+Two independent pipelines share the same browser session (`browser_data/`).
+
+**Pipeline 1 — Note scraper** (`main.py`): `main.py` → `scraper.py` → `processor.py` → file write.
+
+**Pipeline 2 — Favorites sorter** (`sort.py`): `sort.py` → `collect.py` → `categorize.py` → `sort_into_albums.py` → XHS UI.
 
 **`scraper.py`** — Playwright async scraper.
 - `scrape_notes(urls)` is the public API; opens **one** persistent browser context for all URLs, then closes it. This avoids re-authenticating per note.
@@ -55,3 +62,5 @@ The pipeline is strictly linear: `main.py` → `scraper.py` → `processor.py` �
 ## Modifying selectors
 
 If XHS changes its DOM, update the fallback selector lists in `_extract_note()` (`scraper.py:65–106`). The CDN hostname filter for images is at `scraper.py:92`.
+
+For the favorites sorter, all UI interaction selectors (新建专辑, 移动到专辑, album options) are defined as constants at the top of `sort_into_albums.py` — update them there if XHS changes its UI.
