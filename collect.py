@@ -42,21 +42,18 @@ async def _make_context(headless: bool):
 # Login + profile URL detection
 # ---------------------------------------------------------------------------
 
-async def _get_collect_url(page: Page) -> str | None:
+async def _get_profile_url(page: Page) -> str | None:
     """
-    Navigate to XHS home, verify login, and return the user's 收藏夹 URL.
-    Returns None if not logged in.
+    Navigate to XHS home, verify login by finding the user's own profile link.
+    Returns the profile URL, or None if not logged in.
     """
     await page.goto(XHS_HOME, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 
     print(f"[CHECKPOINT 1] Home URL: {page.url}")
 
-    # Detect login state: look for a link to the user's own profile in the nav.
-    # XHS puts the logged-in user's profile link in the left sidebar.
     profile_href = await page.evaluate("""
         () => {
-            // Try common sidebar / nav selectors for the "me" link
             const selectors = [
                 'a.user-wrapper',
                 '.side-bar a[href*="/user/profile/"]',
@@ -67,22 +64,51 @@ async def _get_collect_url(page: Page) -> str | None:
                 const el = document.querySelector(sel);
                 if (el) return el.getAttribute('href');
             }
-            // Fallback: first /user/profile/ link on the page
             const all = document.querySelectorAll('a[href*="/user/profile/"]');
             return all.length ? all[0].getAttribute('href') : null;
         }
     """)
 
     print(f"[CHECKPOINT 1] Profile href found: {profile_href}")
+    return f"https://www.xiaohongshu.com{profile_href.split('?')[0]}" if profile_href else None
 
-    if not profile_href:
-        return None  # not logged in
 
-    # Build collect URL from profile href, e.g. /user/profile/abc123 → .../abc123/collect
-    base = profile_href.split("?")[0].rstrip("/")
-    collect_url = f"https://www.xiaohongshu.com{base}/collect"
-    print(f"[CHECKPOINT 1] Constructed 收藏夹 URL: {collect_url}")
-    return collect_url
+async def _navigate_to_collect(page: Page, profile_url: str) -> bool:
+    """
+    Go to the profile page and click the 收藏 tab.
+    Returns True on success.
+    """
+    print(f"[CHECKPOINT 2] Navigating to profile: {profile_url}")
+    await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(2)
+    print(f"[CHECKPOINT 2] Profile page URL: {page.url}")
+
+    # Find and click the 收藏 tab
+    tab = page.locator(
+        'div[class*="tab"]:has-text("收藏"), '
+        'span[class*="tab"]:has-text("收藏"), '
+        'li:has-text("收藏"), '
+        '*[class*="collect"]:has-text("收藏")'
+    ).first
+    count = await tab.count()
+    print(f"[CHECKPOINT 2] 收藏 tab found: {count > 0}")
+
+    if count == 0:
+        # Fallback: print all tab-like elements to help diagnose
+        all_tabs = await page.evaluate("""
+            () => Array.from(document.querySelectorAll(
+                '[class*="tab"], [class*="Tab"], [role="tab"]'
+            )).map(el => ({cls: el.className, text: el.innerText.trim()}))
+              .filter(t => t.text)
+              .slice(0, 10)
+        """)
+        print(f"[CHECKPOINT 2] All tab-like elements found: {all_tabs}")
+        return False
+
+    await tab.click()
+    await asyncio.sleep(2)
+    print(f"[CHECKPOINT 2] After clicking 收藏 tab, URL: {page.url}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -91,27 +117,27 @@ async def _get_collect_url(page: Page) -> str | None:
 
 async def _scrape_collect(debug: bool = False) -> list[dict]:
     p, ctx = await _make_context(headless=not debug)
-    page = await ctx.new_page()
+    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-    collect_url = await _get_collect_url(page)
+    profile_url = await _get_profile_url(page)
 
-    if not collect_url:
+    if not profile_url:
         print("\n[Login required] No profile link found — you are not logged in.")
         print("Please log in to Xiaohongshu in the browser window, then press Enter...")
         input()
-        # Re-check after login
-        collect_url = await _get_collect_url(page)
-        if not collect_url:
+        profile_url = await _get_profile_url(page)
+        if not profile_url:
             print("[Error] Still cannot find profile link after login. Aborting.")
             await ctx.close()
             await p.stop()
             return []
 
-    # Navigate to 收藏夹
-    print(f"\n[CHECKPOINT 2] Navigating to 收藏夹: {collect_url}")
-    await page.goto(collect_url, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(3)
-    print(f"[CHECKPOINT 2] 收藏夹 page URL: {page.url}")
+    ok = await _navigate_to_collect(page, profile_url)
+    if not ok:
+        print("[Error] Could not find or click the 收藏 tab. See tab list above for diagnostics.")
+        await ctx.close()
+        await p.stop()
+        return []
 
     if debug:
         await _debug_dom_snapshot(page)
