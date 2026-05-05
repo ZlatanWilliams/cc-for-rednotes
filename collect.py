@@ -33,7 +33,7 @@ async def _make_context(headless: bool):
         ),
         locale="zh-CN",
     )
-    for page in ctx.pages:  # close tabs left over from the previous session
+    for page in ctx.pages[1:]:  # close extra tabs, keep one alive
         await page.close()
     return p, ctx
 
