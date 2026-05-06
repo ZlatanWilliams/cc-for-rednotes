@@ -87,6 +87,32 @@ class SortSession:
         if not ok:
             raise RuntimeError("Could not navigate to 收藏 tab.")
 
+    async def get_first_page_stubs(self) -> list[dict]:
+        """Extract post stubs visible on the current page without scrolling."""
+        return await self._page.evaluate("""
+            () => {
+                const map = new Map();
+                document.querySelectorAll(
+                    'section.note-item, .notes-item, .collect-item, .note-card'
+                ).forEach(card => {
+                    const a = card.querySelector('a[href*="/explore/"]');
+                    if (!a) return;
+                    const href = a.getAttribute('href') || '';
+                    const noteId = href.split('/explore/')[1].split('?')[0];
+                    if (!noteId || map.has(noteId)) return;
+                    const img = card.querySelector('img');
+                    const titleEl = card.querySelector('.title, .note-title, span, p');
+                    map.set(noteId, {
+                        note_id: noteId,
+                        url: 'https://www.xiaohongshu.com/explore/' + noteId,
+                        title: titleEl ? titleEl.innerText.trim()
+                                       : (img ? img.getAttribute('alt') || '' : ''),
+                    });
+                });
+                return Array.from(map.values());
+            }
+        """)
+
     async def ensure_album(self, name: str) -> None:
         """Create the album on XHS if it hasn't been created this session."""
         if name in self.created_albums:
@@ -109,7 +135,13 @@ class SortSession:
             self.created_albums.add(name)
             print(f"  [Album created] '{name}'")
         except Exception as e:
+            btns = await self._page.evaluate("""
+                () => Array.from(document.querySelectorAll(
+                    'button, [role="button"], span[class*="btn"]'
+                )).map(el => el.innerText.trim()).filter(Boolean).slice(0, 20)
+            """)
             print(f"  [Error] Could not create album '{name}': {e}")
+            print(f"  [Debug] Visible buttons on page: {btns}")
 
     async def move_post(self, note_id: str, album_name: str) -> bool:
         """Find a post card by note ID and move it to the named album."""

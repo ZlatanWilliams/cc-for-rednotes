@@ -42,6 +42,28 @@ async def _make_context(headless: bool):
 # Login + profile URL detection
 # ---------------------------------------------------------------------------
 
+async def _is_login_modal_visible(page: Page) -> bool:
+    """Returns True if a login modal/mask is currently blocking the page."""
+    return await page.evaluate("""
+        () => {
+            const mask = document.querySelector('i.reds-mask, [class*="reds-mask"]');
+            const phoneInput = document.querySelector('input[placeholder*="手机号"]');
+            return !!(
+                (mask && getComputedStyle(mask).display !== 'none') ||
+                (phoneInput && getComputedStyle(phoneInput).display !== 'none')
+            );
+        }
+    """)
+
+
+async def _wait_for_login(page: Page, prompt_msg: str) -> None:
+    """Block until the user logs in."""
+    print(f"\n[Login required] {prompt_msg}")
+    print("Please log in to Xiaohongshu in the browser window, then press Enter...")
+    input()
+    await asyncio.sleep(3)
+
+
 async def get_profile_url(page: Page) -> str | None:
     """
     Navigate to XHS home, verify login by finding the user's own profile link.
@@ -52,20 +74,29 @@ async def get_profile_url(page: Page) -> str | None:
 
     print(f"[CHECKPOINT 1] Home URL: {page.url}")
 
+    if await _is_login_modal_visible(page):
+        await _wait_for_login(page, "Login modal detected on home page.")
+        await page.goto(XHS_HOME, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
+
+    # Prefer the logged-in user's own nav/sidebar avatar link over feed links
     profile_href = await page.evaluate("""
         () => {
-            const selectors = [
+            const ownSelectors = [
                 'a.user-wrapper',
                 '.side-bar a[href*="/user/profile/"]',
                 'nav a[href*="/user/profile/"]',
-                'a[href*="/user/profile/"]:not([href*="/explore"])',
+                'aside a[href*="/user/profile/"]',
+                '.left-sidebar a[href*="/user/profile/"]',
             ];
-            for (const sel of selectors) {
+            for (const sel of ownSelectors) {
                 const el = document.querySelector(sel);
                 if (el) return el.getAttribute('href');
             }
-            const all = document.querySelectorAll('a[href*="/user/profile/"]');
-            return all.length ? all[0].getAttribute('href') : null;
+            // Last-resort: any profile link not inside a feed card
+            const all = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'));
+            const nav = all.find(a => !a.closest('section') && !a.closest('[class*="note"]') && !a.closest('[class*="card"]'));
+            return nav ? nav.getAttribute('href') : (all.length ? all[0].getAttribute('href') : null);
         }
     """)
 
@@ -82,6 +113,11 @@ async def navigate_to_collect(page: Page, profile_url: str) -> bool:
     await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(2)
     print(f"[CHECKPOINT 2] Profile page URL: {page.url}")
+
+    if await _is_login_modal_visible(page):
+        await _wait_for_login(page, "Login modal appeared after navigating to profile.")
+        await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
 
     # Find and click the 收藏 tab
     tab = page.locator(
@@ -105,6 +141,18 @@ async def navigate_to_collect(page: Page, profile_url: str) -> bool:
         print(f"[CHECKPOINT 2] All tab-like elements found: {all_tabs}")
         return False
 
+    # Guard against login modal blocking the click
+    if await _is_login_modal_visible(page):
+        await _wait_for_login(page, "Login modal is blocking the 收藏 tab click.")
+        await page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+        tab = page.locator(
+            'div[class*="tab"]:has-text("收藏"), '
+            'span[class*="tab"]:has-text("收藏"), '
+            'li:has-text("收藏"), '
+            '*[class*="collect"]:has-text("收藏")'
+        ).first
+
     await tab.click()
     await asyncio.sleep(2)
     print(f"[CHECKPOINT 2] After clicking 收藏 tab, URL: {page.url}")
@@ -122,15 +170,10 @@ async def _scrape_collect(debug: bool = False) -> list[dict]:
     profile_url = await get_profile_url(page)
 
     if not profile_url:
-        print("\n[Login required] No profile link found — you are not logged in.")
-        print("Please log in to Xiaohongshu in the browser window, then press Enter...")
-        input()
-        profile_url = await get_profile_url(page)
-        if not profile_url:
-            print("[Error] Still cannot find profile link after login. Aborting.")
-            await ctx.close()
-            await p.stop()
-            return []
+        print("[Error] Cannot find your profile link even after login. Aborting.")
+        await ctx.close()
+        await p.stop()
+        return []
 
     ok = await navigate_to_collect(page, profile_url)
     if not ok:
